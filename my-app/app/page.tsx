@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
+import { supabase } from "@/lib/supabase";
 
 type User = {
   id: number;
@@ -13,24 +14,16 @@ type Task = {
   id: number;
   text: string;
   completed: boolean;
-  userId: number;
+  user_id: number;
 };
 
 type Comment = {
   id: number;
-  taskId: number;
-  userId: number;
-  userName: string;
+  task_id: number;
+  user_id: number;
+  user_name: string;
   content: string;
-  timestamp: number;
 };
-
-// 初期ユーザーデータ
-const INITIAL_USERS: User[] = [
-  { id: 1, name: "田中太郎", email: "tanaka@example.com" },
-  { id: 2, name: "佐藤花子", email: "sato@example.com" },
-  { id: 3, name: "山田次郎", email: "yamada@example.com" },
-];
 
 export default function Home() {
   const [users, setUsers] = useState<User[]>([]);
@@ -40,6 +33,7 @@ export default function Home() {
   const [draggedTask, setDraggedTask] = useState<Task | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentInputs, setCommentInputs] = useState<{ [taskId: number]: string }>({});
+  const [loading, setLoading] = useState(true);
 
   // 新規登録フォームの状態
   const [showRegisterForm, setShowRegisterForm] = useState(false);
@@ -49,103 +43,136 @@ export default function Home() {
   // ログインフォームの状態
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
 
-  // 初期化: ローカルストレージからデータを読み込む
+  // 初期化: Supabaseからユーザー一覧を取得
   useEffect(() => {
-    const storedUsers = localStorage.getItem("kanban-users");
-    const storedCurrentUserId = localStorage.getItem("kanban-current-user-id");
-    const storedTasks = localStorage.getItem("kanban-tasks");
-    const storedComments = localStorage.getItem("kanban-comments");
+    const fetchUsers = async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .order('id');
 
-    if (storedUsers) {
-      const parsedUsers = JSON.parse(storedUsers);
-      setUsers(parsedUsers);
-
-      if (storedCurrentUserId) {
-        const userId = parseInt(storedCurrentUserId);
-        const user = parsedUsers.find((u: User) => u.id === userId);
-        if (user) {
-          setCurrentUser(user);
-        }
+      if (error) {
+        console.error('Error fetching users:', error);
+      } else if (data) {
+        setUsers(data);
       }
-    } else {
-      // 初回起動時は初期ユーザーをセット
-      setUsers(INITIAL_USERS);
-      localStorage.setItem("kanban-users", JSON.stringify(INITIAL_USERS));
-    }
+      setLoading(false);
+    };
 
-    if (storedTasks) {
-      setTasks(JSON.parse(storedTasks));
-    }
+    fetchUsers();
 
-    if (storedComments) {
-      setComments(JSON.parse(storedComments));
+    // ログイン状態の復元（localStorage使用）
+    const storedUserId = localStorage.getItem("kanban-current-user-id");
+    if (storedUserId) {
+      const userId = parseInt(storedUserId);
+      fetchUserById(userId);
     }
   }, []);
 
-  // ユーザーが変更されたらローカルストレージに保存
-  useEffect(() => {
-    if (users.length > 0) {
-      localStorage.setItem("kanban-users", JSON.stringify(users));
-    }
-  }, [users]);
+  // ユーザーIDからユーザー情報を取得
+  const fetchUserById = async (userId: number) => {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .single();
 
-  // 現在のユーザーが変更されたらローカルストレージに保存
+    if (error) {
+      console.error('Error fetching user:', error);
+    } else if (data) {
+      setCurrentUser(data);
+    }
+  };
+
+  // ログイン時にタスクとコメントを取得
   useEffect(() => {
     if (currentUser) {
-      localStorage.setItem(
-        "kanban-current-user-id",
-        currentUser.id.toString()
-      );
+      fetchTasks();
+      fetchComments();
+      localStorage.setItem("kanban-current-user-id", currentUser.id.toString());
     } else {
       localStorage.removeItem("kanban-current-user-id");
+      setTasks([]);
+      setComments([]);
     }
   }, [currentUser]);
 
-  // タスクが変更されたらローカルストレージに保存
-  useEffect(() => {
-    if (tasks.length >= 0) {
-      localStorage.setItem("kanban-tasks", JSON.stringify(tasks));
-    }
-  }, [tasks]);
+  // タスク取得
+  const fetchTasks = async () => {
+    if (!currentUser) return;
 
-  // コメントが変更されたらローカルストレージに保存
-  useEffect(() => {
-    if (comments.length >= 0) {
-      localStorage.setItem("kanban-comments", JSON.stringify(comments));
+    const { data, error } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('user_id', currentUser.id)
+      .order('id');
+
+    if (error) {
+      console.error('Error fetching tasks:', error);
+    } else if (data) {
+      setTasks(data);
     }
-  }, [comments]);
+  };
+
+  // コメント取得
+  const fetchComments = async () => {
+    const { data, error } = await supabase
+      .from('comments')
+      .select('*')
+      .order('id');
+
+    if (error) {
+      console.error('Error fetching comments:', error);
+    } else if (data) {
+      setComments(data);
+    }
+  };
 
   // 新規登録処理
-  const handleRegister = () => {
+  const handleRegister = async () => {
     if (registerName.trim() === "" || registerEmail.trim() === "") {
       alert("名前とメールアドレスを入力してください");
       return;
     }
 
-    const newUser: User = {
-      id: Date.now(),
-      name: registerName.trim(),
-      email: registerEmail.trim(),
-    };
+    const { data, error } = await supabase
+      .from('users')
+      .insert([
+        {
+          name: registerName.trim(),
+          email: registerEmail.trim(),
+        }
+      ])
+      .select()
+      .single();
 
-    setUsers([...users, newUser]);
-    setCurrentUser(newUser);
-    setRegisterName("");
-    setRegisterEmail("");
-    setShowRegisterForm(false);
+    if (error) {
+      if (error.code === '23505') {
+        alert("このメールアドレスは既に登録されています");
+      } else {
+        console.error('Error registering user:', error);
+        alert("登録に失敗しました");
+      }
+      return;
+    }
+
+    if (data) {
+      setUsers([...users, data]);
+      setCurrentUser(data);
+      setRegisterName("");
+      setRegisterEmail("");
+      setShowRegisterForm(false);
+    }
   };
 
   // ログイン処理
-  const handleLogin = () => {
+  const handleLogin = async () => {
     if (selectedUserId === null) {
       alert("ユーザーを選択してください");
       return;
     }
 
-    const user = users.find((u) => u.id === selectedUserId);
-    if (user) {
-      setCurrentUser(user);
-    }
+    await fetchUserById(selectedUserId);
   };
 
   // ログアウト処理
@@ -155,33 +182,69 @@ export default function Home() {
   };
 
   // タスク追加
-  const handleAddTask = () => {
+  const handleAddTask = async () => {
     if (!currentUser) return;
 
     if (inputValue.trim() !== "") {
-      const newTask: Task = {
-        id: Date.now(),
-        text: inputValue.trim(),
-        completed: false,
-        userId: currentUser.id,
-      };
-      setTasks([...tasks, newTask]);
-      setInputValue("");
+      const { data, error } = await supabase
+        .from('tasks')
+        .insert([
+          {
+            user_id: currentUser.id,
+            text: inputValue.trim(),
+            completed: false,
+          }
+        ])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error adding task:', error);
+        alert("タスクの追加に失敗しました");
+      } else if (data) {
+        setTasks([...tasks, data]);
+        setInputValue("");
+      }
     }
   };
 
   // タスク完了状態の切り替え
-  const toggleTaskCompletion = (id: number) => {
-    setTasks(
-      tasks.map((task) =>
-        task.id === id ? { ...task, completed: !task.completed } : task
-      )
-    );
+  const toggleTaskCompletion = async (id: number) => {
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+
+    const { error } = await supabase
+      .from('tasks')
+      .update({ completed: !task.completed })
+      .eq('id', id);
+
+    if (error) {
+      console.error('Error updating task:', error);
+      alert("タスクの更新に失敗しました");
+    } else {
+      setTasks(
+        tasks.map((t) =>
+          t.id === id ? { ...t, completed: !t.completed } : t
+        )
+      );
+    }
   };
 
   // タスク削除
-  const handleDeleteTask = (id: number) => {
-    setTasks(tasks.filter((task) => task.id !== id));
+  const handleDeleteTask = async (id: number) => {
+    const { error } = await supabase
+      .from('tasks')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('Error deleting task:', error);
+      alert("タスクの削除に失敗しました");
+    } else {
+      setTasks(tasks.filter((task) => task.id !== id));
+      // タスクに紐づくコメントも削除（カスケード削除されるが、ローカルステートも更新）
+      setComments(comments.filter((comment) => comment.task_id !== id));
+    }
   };
 
   // Enterキーでタスク追加
@@ -200,37 +263,56 @@ export default function Home() {
     e.preventDefault();
   };
 
-  const handleDrop = (targetCompleted: boolean) => {
+  const handleDrop = async (targetCompleted: boolean) => {
     if (draggedTask && draggedTask.completed !== targetCompleted) {
-      setTasks(
-        tasks.map((task) =>
-          task.id === draggedTask.id
-            ? { ...task, completed: targetCompleted }
-            : task
-        )
-      );
+      const { error } = await supabase
+        .from('tasks')
+        .update({ completed: targetCompleted })
+        .eq('id', draggedTask.id);
+
+      if (error) {
+        console.error('Error updating task:', error);
+        alert("タスクの更新に失敗しました");
+      } else {
+        setTasks(
+          tasks.map((task) =>
+            task.id === draggedTask.id
+              ? { ...task, completed: targetCompleted }
+              : task
+          )
+        );
+      }
     }
     setDraggedTask(null);
   };
 
   // コメント追加
-  const handleAddComment = (taskId: number) => {
+  const handleAddComment = async (taskId: number) => {
     if (!currentUser) return;
 
     const commentContent = commentInputs[taskId]?.trim();
     if (!commentContent) return;
 
-    const newComment: Comment = {
-      id: Date.now(),
-      taskId,
-      userId: currentUser.id,
-      userName: currentUser.name,
-      content: commentContent,
-      timestamp: Date.now(),
-    };
+    const { data, error } = await supabase
+      .from('comments')
+      .insert([
+        {
+          task_id: taskId,
+          user_id: currentUser.id,
+          user_name: currentUser.name,
+          content: commentContent,
+        }
+      ])
+      .select()
+      .single();
 
-    setComments([...comments, newComment]);
-    setCommentInputs({ ...commentInputs, [taskId]: "" });
+    if (error) {
+      console.error('Error adding comment:', error);
+      alert("コメントの追加に失敗しました");
+    } else if (data) {
+      setComments([...comments, data]);
+      setCommentInputs({ ...commentInputs, [taskId]: "" });
+    }
   };
 
   // コメント入力欄の更新
@@ -241,16 +323,28 @@ export default function Home() {
   // タスクのコメント取得
   const getTaskComments = (taskId: number) => {
     return comments
-      .filter((comment) => comment.taskId === taskId)
-      .sort((a, b) => a.timestamp - b.timestamp);
+      .filter((comment) => comment.task_id === taskId)
+      .sort((a, b) => a.id - b.id);
   };
 
   // 現在のユーザーのタスクのみフィルタリング
   const userTasks = currentUser
-    ? tasks.filter((task) => task.userId === currentUser.id)
+    ? tasks.filter((task) => task.user_id === currentUser.id)
     : [];
   const incompleteTasks = userTasks.filter((task) => !task.completed);
   const completedTasks = userTasks.filter((task) => task.completed);
+
+  // ローディング中
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 flex items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-indigo-600 border-t-transparent"></div>
+          <p className="mt-4 text-gray-600 dark:text-gray-300">読み込み中...</p>
+        </div>
+      </main>
+    );
+  }
 
   // ログインしていない場合の画面
   if (!currentUser) {
@@ -513,7 +607,7 @@ export default function Home() {
                                 className="bg-gray-100 dark:bg-gray-600/50 rounded-lg p-2"
                               >
                                 <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
-                                  {comment.userName}
+                                  {comment.user_name}
                                 </p>
                                 <p className="text-sm text-gray-600 dark:text-gray-300">
                                   {comment.content}
@@ -632,7 +726,7 @@ export default function Home() {
                                 className="bg-gray-100 dark:bg-gray-600/50 rounded-lg p-2"
                               >
                                 <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
-                                  {comment.userName}
+                                  {comment.user_name}
                                 </p>
                                 <p className="text-sm text-gray-600 dark:text-gray-300">
                                   {comment.content}
